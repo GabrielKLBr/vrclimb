@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>VR Climb Game</title>
+  <script src="https://aframe.io/releases/1.7.0/aframe.min.js"></script>
+  <style>
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+      font-family: Arial, Helvetica, sans-serif;
+    }
+  </style>
+
+  <script>
+    const GRAB_DISTANCE = 0.45;
+    const GRAVITY = 9.0;
+    const PUSH_SCALE = 2.0;
+    const SLIP_EXTRA_DOWN = 0.55;
+    const SLIP_PULL_SCALE = 0.7;
+
+    const levels = [
+      {
+        name: "Tutorial",
+        description: "Paredes azuis agarram. Ciano escorrega. Cinza não agarra.",
+        spawn: [0, 1.6, 4],
+        respawn: [0, 1.6, 4],
+        surfaces: [
+          { type: "climbable", pos: [0, 2.0, -4], size: [6, 4, 0.35] },
+          { type: "climbable", pos: [0, 5.0, -7], size: [4.6, 1.2, 0.35] },
+          { type: "slippery", pos: [0, 3.4, -10], size: [4.2, 2.0, 0.35] },
+          { type: "ungrabbable", pos: [2.2, 2.0, -10], size: [1.4, 4.0, 0.35] },
+          { type: "climbable", pos: [-2.2, 2.0, -13], size: [1.4, 4.0, 0.35] },
+          { type: "climbable", pos: [0, 2.0, -16], size: [6, 4, 0.35] }
+        ],
+        checkpoints: [
+          { pos: [0, 1.2, -8], size: [0.8, 1.4, 0.25] }
+        ],
+        goal: { pos: [0, 2.0, -19], size: [1.2, 2.6, 0.7] }
+      },
+      {
+        name: "Salto de Parede",
+        description: "Empurre de uma parede e pegue a outra.",
+        spawn: [0, 1.6, 4],
+        respawn: [0, 1.6, 4],
+        surfaces: [
+          { type: "climbable", pos: [-2.8, 2.1, -4], size: [2.2, 4.2, 0.35] },
+          { type: "ungrabbable", pos: [0, 2.0, -6], size: [1.6, 4.5, 0.35] },
+          { type: "climbable", pos: [2.8, 2.1, -8], size: [2.2, 4.2, 0.35] },
+          { type: "slippery", pos: [0, 4.6, -10], size: [5.0, 1.2, 0.35] },
+          { type: "climbable", pos: [-1.6, 2.1, -13], size: [2.4, 4.2, 0.35] },
+          { type: "climbable", pos: [1.8, 2.1, -16], size: [2.4, 4.2, 0.35] }
+        ],
+        checkpoints: [
+          { pos: [0, 1.2, -9], size: [0.8, 1.4, 0.25] }
+        ],
+        goal: { pos: [0, 2.0, -19], size: [1.2, 2.6, 0.7] }
+      },
+      {
+        name: "Torre",
+        description: "Mais alto, mais escorregadio, mais trepa-trepa.",
+        spawn: [0, 1.6, 4],
+        respawn: [0, 1.6, 4],
+        surfaces: [
+          { type: "climbable", pos: [0, 1.9, -4], size: [4.6, 3.8, 0.35] },
+          { type: "climbable", pos: [-2.2, 4.2, -7], size: [2.0, 3.2, 0.35] },
+          { type: "ungrabbable", pos: [2.2, 4.2, -7], size: [2.0, 3.2, 0.35] },
+          { type: "slippery", pos: [0, 6.8, -10], size: [5.0, 1.6, 0.35] },
+          { type: "climbable", pos: [-2.0, 2.0, -13], size: [1.8, 4.0, 0.35] },
+          { type: "climbable", pos: [2.0, 2.0, -16], size: [1.8, 4.0, 0.35] },
+          { type: "climbable", pos: [0, 2.0, -19], size: [6.0, 4.0, 0.35] }
+        ],
+        checkpoints: [
+          { pos: [0, 1.2, -9], size: [0.8, 1.4, 0.25] },
+          { pos: [0, 1.2, -15], size: [0.8, 1.4, 0.25] }
+        ],
+        goal: { pos: [0, 2.0, -22], size: [1.2, 2.6, 0.7] }
+      }
+    ];
+
+    let selectedLevel = 0;
+    let gameState = "menu";
+    let surfaces = [];
+    let checkpoints = [];
+    let goalBox = null;
+    let currentRespawn = new THREE.Vector3(0, 1.6, 4);
+    window.activeGrabCount = 0;
+
+    function v3(a) {
+      return new THREE.Vector3(a[0], a[1], a[2]);
+    }
+
+    function pointToBoxDistance(p, b) {
+      const dx = Math.max(Math.abs(p.x - b.pos.x) - b.size.x / 2, 0);
+      const dy = Math.max(Math.abs(p.y - b.pos.y) - b.size.y / 2, 0);
+      const dz = Math.max(Math.abs(p.z - b.pos.z) - b.size.z / 2, 0);
+      return Math.sqrt(dx * dx + dy * dy + dz * dz);
+    }
+
+    function clamp(v, min, max) {
+      return Math.max(min, Math.min(max, v));
+    }
+
+    function boxNormalFromPoint(p, b) {
+      const local = p.clone().sub(b.pos);
+      const half = new THREE.Vector3(b.size.x / 2, b.size.y / 2, b.size.z / 2);
+      const nx = half.x > 0 ? Math.abs(local.x) / half.x : 0;
+      const ny = half.y > 0 ? Math.abs(local.y) / half.y : 0;
+      const nz = half.z > 0 ? Math.abs(local.z) / half.z : 0;
+
+      if (nx >= ny && nx >= nz) return new THREE.Vector3(Math.sign(local.x) || 1, 0, 0);
+      if (ny >= nx && ny >= nz) return new THREE.Vector3(0, Math.sign(local.y) || 1, 0);
+      return new THREE.Vector3(0, 0, Math.sign(local.z) || 1);
+    }
+
+    function setText(id, value) {
+      const el = document.querySelector(id);
+      if (el) el.setAttribute("value", value);
+    }
+
+    function clearChildren(node) {
+      while (node.firstChild) node.removeChild(node.firstChild);
+    }
+
+    function setMenuVisible(v) {
+      document.querySelector("#menuRoot").setAttribute("visible", v);
+    }
+
+    function setGameVisible(v) {
+      document.querySelector("#gameRoot").setAttribute("visible", v);
+    }
+
+    function updateMenuLabels() {
+      setText("#menuLevelText", `Nível: ${levels[selectedLevel].name}`);
+      setText("#menuDescText", levels[selectedLevel].description);
+    }
+
+    function respawnPlayer() {
+      const rig = document.querySelector("#rig");
+      const physics = rig.components["rig-physics"];
+      rig.object3D.position.copy(currentRespawn);
+      if (physics) physics.velocity.set(0, 0, 0);
+      setText("#statusText", "Respawn");
+      setTimeout(() => setText("#statusText", ""), 700);
+    }
+
+    function loadLevel(index) {
+      selectedLevel = (index + levels.length) % levels.length;
+      const level = levels[selectedLevel];
+
+      const root = document.querySelector("#levelRoot");
+      clearChildren(root);
+
+      surfaces = [];
+      checkpoints = [];
+      goalBox = null;
+      currentRespawn.copy(v3(level.respawn));
+
+      const rig = document.querySelector("#rig");
+      const physics = rig.components["rig-physics"];
+      rig.object3D.position.copy(v3(level.spawn));
+      if (physics) physics.velocity.set(0, 0, 0);
+
+      document.querySelector("#sky").setAttribute("color", "#9fd3ff");
+
+      const floor = document.createElement("a-plane");
+      floor.setAttribute("rotation", "-90 0 0");
+      floor.setAttribute("width", "200");
+      floor.setAttribute("height", "200");
+      floor.setAttribute("material", "color: #666; roughness: 1");
+      floor.setAttribute("shadow", "receive: true");
+      root.appendChild(floor);
+
+      level.surfaces.forEach(def => {
+        const rec = {
+          type: def.type,
+          pos: v3(def.pos),
+          size: new THREE.Vector3(def.size[0], def.size[1], def.size[2])
+        };
+        surfaces.push(rec);
+
+        const box = document.createElement("a-box");
+        box.setAttribute("position", `${def.pos[0]} ${def.pos[1]} ${def.pos[2]}`);
+        box.setAttribute("width", def.size[0]);
+        box.setAttribute("height", def.size[1]);
+        box.setAttribute("depth", def.size[2]);
+        box.setAttribute(
+          "material",
+          def.type === "climbable"
+            ? "color: #7c8ea6; roughness: 0.95"
+            : def.type === "slippery"
+              ? "color: #8de3ff; roughness: 0.15; opacity: 0.95; transparent: true"
+              : "color: #4c4c55; roughness: 1"
+        );
+        root.appendChild(box);
+
+        if (def.type === "ungrabbable") {
+          const strip = document.createElement("a-box");
+          strip.setAttribute("position", `${def.pos[0]} ${def.pos[1]} ${def.pos[2] + 0.02}`);
+          strip.setAttribute("width", def.size[0] * 0.98);
+          strip.setAttribute("height", "0.12");
+          strip.setAttribute("depth", "0.03");
+          strip.setAttribute("material", "color: #ff4b4b; emissive: #ff1d1d; emissiveIntensity: 0.2");
+          root.appendChild(strip);
+        }
+      });
+
+      level.checkpoints.forEach((cp, i) => {
+        const rec = {
+          pos: v3(cp.pos),
+          size: new THREE.Vector3(cp.size[0], cp.size[1], cp.size[2])
+        };
+        checkpoints.push(rec);
+
+        const flag = document.createElement("a-box");
+        flag.setAttribute("position", `${cp.pos[0]} ${cp.pos[1]} ${cp.pos[2]}`);
+        flag.setAttribute("width", cp.size[0]);
+        flag.setAttribute("height", cp.size[1]);
+        flag.setAttribute("depth", cp.size[2]);
+        flag.setAttribute("material", "color: #4dff9c; emissive: #1dff7d; emissiveIntensity: 0.25");
+        root.appendChild(flag);
+
+        const label = document.createElement("a-text");
+        label.setAttribute("value", `Checkpoint ${i + 1}`);
+        label.setAttribute("position", `${cp.pos[0]} ${cp.pos[1] + 0.9} ${cp.pos[2] + 0.15}`);
+        label.setAttribute("align", "center");
+        label.setAttribute("color", "#ffffff");
+        label.setAttribute("width", "3");
+        root.appendChild(label);
+      });
+
+      goalBox = {
+        pos: v3(level.goal.pos),
+        size: new THREE.Vector3(level.goal.size[0], level.goal.size[1], level.goal.size[2])
+      };
+
+      const goal = document.createElement("a-box");
+      goal.setAttribute("position", `${level.goal.pos[0]} ${level.goal.pos[1]} ${level.goal.pos[2]}`);
+      goal.setAttribute("width", level.goal.size[0]);
+      goal.setAttribute("height", level.goal.size[1]);
+      goal.setAttribute("depth", level.goal.size[2]);
+      goal.setAttribute("material", "color: #ffe75e; emissive: #fff2a0; emissiveIntensity: 0.35");
+      root.appendChild(goal);
+
+      const goalText = document.createElement("a-text");
+      goalText.setAttribute("value", "GOAL");
+      goalText.setAttribute("position", `${level.goal.pos[0]} ${level.goal.pos[1] + 1.8} ${level.goal.pos[2] + 0.4}`);
+      goalText.setAttribute("align", "center");
+      goalText.setAttribute("color", "#ffffff");
+      goalText.setAttribute("width", "4");
+      root.appendChild(goalText);
+
+      setText("#hudText", level.name);
+      setText("#hudSubText", level.description);
+      setText("#hintText", "Segure o trigger perto de uma parede azul e mova a mão para baixo para subir.");
+      setText("#statusText", "");
+    }
+
+    function startGame() {
+      setMenuVisible(false);
+      setGameVisible(true);
+      gameState = "play";
+      loadLevel(selectedLevel);
+    }
+
+    function showMenu() {
+      gameState = "menu";
+      setGameVisible(false);
+      setMenuVisible(true);
+      setText("#hintText", "Escolha um nível no menu.");
+    }
+
+    function nextLevel() {
+      if (selectedLevel < levels.length - 1) {
+        selectedLevel += 1;
+        startGame();
+      } else {
+        showMenu();
+      }
+    }
+
+    AFRAME.registerComponent("menu-button", {
+      schema: { action: { type: "string" } },
+      init: function () {
+        this.el.addEventListener("mouseenter", () => {
+          this.el.setAttribute("material", "color", "#ffffff");
+          this.el.setAttribute("text", "color", "#111111");
+        });
+        this.el.addEventListener("mouseleave", () => {
+          if (this.data.action === "play") this.el.setAttribute("material", "color", "#ffd86b");
+          else this.el.setAttribute("material", "color", "#d6d6d6");
+          this.el.setAttribute("text", "color", "#111111");
+        });
+        this.el.addEventListener("click", () => {
+          if (this.data.action === "prev") {
+            selectedLevel = (selectedLevel - 1 + levels.length) % levels.length;
+            updateMenuLabels();
+          } else if (this.data.action === "next") {
+            selectedLevel = (selectedLevel + 1) % levels.length;
+            updateMenuLabels();
+          } else if (this.data.action === "play") {
+            startGame();
+          }
+        });
+      }
+    });
+
+    AFRAME.registerComponent("rig-physics", {
+      init: function () {
+        this.velocity = new THREE.Vector3();
+        window.playerVelocity = this.velocity;
+      },
+      tick: function (time, dt) {
+        if (gameState !== "play") return;
+        const delta = Math.min(dt / 1000, 0.05);
+
+        if (window.activeGrabCount > 0) {
+          this.velocity.set(0, 0, 0);
+        } else {
+          this.velocity.y -= GRAVITY * delta;
+        }
+
+        this.el.object3D.position.addScaledVector(this.velocity, delta);
+
+        if (this.el.object3D.position.y < -8) {
+          respawnPlayer();
+          return;
+        }
+
+        const playerPos = this.el.object3D.position.clone();
+
+        for (const cp of checkpoints) {
+          if (pointToBoxDistance(playerPos, cp) < 0.6) {
+            currentRespawn.copy(cp.pos.clone().add(new THREE.Vector3(0, 0.8, 0)));
+            setText("#statusText", "Checkpoint");
+            setTimeout(() => setText("#statusText", ""), 700);
+          }
+        }
+
+        if (goalBox && pointToBoxDistance(playerPos, goalBox) < 0.9) {
+          setText("#statusText", "Nível concluído");
+          setTimeout(() => {
+            setText("#statusText", "");
+            nextLevel();
+          }, 700);
+        }
+      }
+    });
+
+    AFRAME.registerComponent("grab-hand", {
+      init: function () {
+        this.pressed = false;
+        this.grabbing = false;
+        this.surface = null;
+        this.lastPos = new THREE.Vector3();
+        this.worldPos = new THREE.Vector3();
+        this.handVel = new THREE.Vector3();
+        this.normal = new THREE.Vector3();
+
+        const onDown = () => {
+          this.pressed = true;
+        };
+
+        const onUp = () => {
+          this.pressed = false;
+          if (this.grabbing) this.release();
+        };
+
+        this.el.addEventListener("triggerdown", onDown);
+        this.el.addEventListener("gripdown", onDown);
+        this.el.addEventListener("triggerup", onUp);
+        this.el.addEventListener("gripup", onUp);
+      },
+
+      tryGrab: function () {
+        if (gameState !== "play" || this.grabbing) return;
+
+        this.el.object3D.getWorldPosition(this.worldPos);
+
+        let best = null;
+        let bestDist = Infinity;
+
+        for (const s of surfaces) {
+          if (s.type === "ungrabbable") continue;
+          const d = pointToBoxDistance(this.worldPos, s);
+          if (d < GRAB_DISTANCE && d < bestDist) {
+            best = s;
+            bestDist = d;
+          }
+        }
+
+        if (!best) return;
+
+        this.grabbing = true;
+        this.surface = best;
+        this.lastPos.copy(this.worldPos);
+        this.normal.copy(boxNormalFromPoint(this.worldPos, best));
+        window.activeGrabCount += 1;
+      },
+
+      release: function () {
+        if (!this.grabbing) return;
+
+        if (window.playerVelocity) {
+          const push = Math.max(0, -this.handVel.dot(this.normal));
+          if (push > 0.001) {
+            window.playerVelocity.add(this.normal.clone().multiplyScalar(push * PUSH_SCALE));
+          }
+        }
+
+        this.grabbing = false;
+        this.surface = null;
+        window.activeGrabCount = Math.max(0, window.activeGrabCount - 1);
+      },
+
+      tick: function (time, dt) {
+        const delta = Math.min(dt / 1000, 0.05);
+        this.el.object3D.getWorldPosition(this.worldPos);
+
+        if (delta > 0) {
+          this.handVel.copy(this.worldPos).sub(this.lastPos).divideScalar(delta);
+        } else {
+          this.handVel.set(0, 0, 0);
+        }
+
+        if (this.pressed && !this.grabbing) {
+          this.tryGrab();
+        }
+
+        if (this.grabbing && gameState === "play") {
+          const move = this.worldPos.clone().sub(this.lastPos);
+          let scale = 1.0;
+
+          if (this.surface && this.surface.type === "slippery") {
+            scale = SLIP_PULL_SCALE;
+            document.querySelector("#statusText").setAttribute("value", "Superfície escorregadia");
+          }
+
+          const rig = document.querySelector("#rig").object3D;
+          rig.position.sub(move.multiplyScalar(scale));
+
+          if (this.surface && this.surface.type === "slippery") {
+            rig.position.y -= SLIP_EXTRA_DOWN * delta;
+          }
+        }
+
+        this.lastPos.copy(this.worldPos);
+      }
+    });
+
+    window.addEventListener("DOMContentLoaded", () => {
+      updateMenuLabels();
+      showMenu();
+
+      window.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") showMenu();
+        if (e.key === "Enter" && gameState === "menu") startGame();
+        if (e.key === "ArrowLeft" && gameState === "menu") {
+          selectedLevel = (selectedLevel - 1 + levels.length) % levels.length;
+          updateMenuLabels();
+        }
+        if (e.key === "ArrowRight" && gameState === "menu") {
+          selectedLevel = (selectedLevel + 1) % levels.length;
+          updateMenuLabels();
+        }
+      });
+    });
+  </script>
+</head>
+<body>
+  <a-scene
+    renderer="colorManagement: true; physicallyCorrectLights: true"
+    vr-mode-ui="enabled: true"
+  >
+    <a-sky id="sky" color="#9fd3ff"></a-sky>
+
+    <a-entity light="type: ambient; color: #ffffff; intensity: 0.75"></a-entity>
+    <a-entity light="type: directional; color: #ffffff; intensity: 1.1" position="-1 3 2"></a-entity>
+
+    <a-entity id="menuRoot" visible="true">
+      <a-entity position="0 1.7 -3">
+        <a-plane width="2.8" height="2.15" material="color: #ececec; opacity: 0.97"></a-plane>
+        <a-text value="CLIMB" position="0 0.75 0.01" align="center" color="#111" width="4"></a-text>
+        <a-text id="menuLevelText" value="Nível: -" position="0 0.40 0.01" align="center" color="#222" width="4"></a-text>
+        <a-text id="menuDescText" value="" position="0 0.06 0.01" align="center" color="#333" width="3.2"></a-text>
+
+        <a-entity class="clickable" menu-button="action: prev"
+          geometry="primitive: plane; width: 0.7; height: 0.28"
+          material="color: #d6d6d6"
+          position="-0.9 -0.58 0.02"
+          text="value: Prev; align: center; color: #111; width: 2">
+        </a-entity>
+
+        <a-entity class="clickable" menu-button="action: play"
+          geometry="primitive: plane; width: 0.95; height: 0.32"
+          material="color: #ffd86b"
+          position="0 -0.58 0.02"
+          text="value: Play; align: center; color: #111; width: 2">
+        </a-entity>
+
+        <a-entity class="clickable" menu-button="action: next"
+          geometry="primitive: plane; width: 0.7; height: 0.28"
+          material="color: #d6d6d6"
+          position="0.9 -0.58 0.02"
+          text="value: Next; align: center; color: #111; width: 2">
+        </a-entity>
+
+        <a-text value="Enter também inicia no desktop." position="0 -1.0 0.01" align="center" color="#222" width="3.2"></a-text>
+      </a-entity>
+    </a-entity>
+
+    <a-entity id="gameRoot" visible="false">
+      <a-entity id="levelRoot"></a-entity>
+
+      <a-entity position="0 2.75 -2">
+        <a-plane width="3.0" height="0.52" material="color: #101820; opacity: 0.65"></a-plane>
+        <a-text id="hudText" value="" position="0 0.12 0.02" align="center" color="#fff" width="3.2"></a-text>
+        <a-text id="hudSubText" value="" position="0 -0.13 0.02" align="center" color="#e3f4ff" width="3.2"></a-text>
+      </a-entity>
+
+      <a-entity position="0 2.15 -2">
+        <a-text id="hintText" value="" position="0 0 0.02" align="center" color="#fff" width="3.5"></a-text>
+      </a-entity>
+
+      <a-entity position="0 1.75 -2">
+        <a-text id="statusText" value="" position="0 0 0.02" align="center" color="#ffffff" width="3"></a-text>
+      </a-entity>
+    </a-entity>
+
+    <a-entity id="rig" position="0 1.6 4" rig-physics>
+      <a-camera
+        cursor="rayOrigin: mouse; fuse: false"
+        raycaster="objects: .clickable"
+      ></a-camera>
+
+      <a-entity
+        id="leftHand"
+        laser-controls="hand: left"
+        grab-hand>
+      </a-entity>
+
+      <a-entity
+        id="rightHand"
+        laser-controls="hand: right"
+        grab-hand>
+      </a-entity>
+    </a-entity>
+  </a-scene>
+</body>
+          </html>
