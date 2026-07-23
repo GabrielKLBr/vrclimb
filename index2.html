@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>VR Climb Ground</title>
+  <script src="https://aframe.io/releases/1.7.0/aframe.min.js"></script>
+  <style>
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+      font-family: Arial, Helvetica, sans-serif;
+    }
+  </style>
+
+  <script>
+    const FLOOR_Y = 0;
+    const EYE_HEIGHT = 1.6;
+    const GRAVITY = 9.8;
+    const FALL_LIMIT = -12;
+
+    const PLAYER_RADIUS = 0.35;
+    const PLAYER_HEIGHT = 1.6;
+
+    const HAND_GROUND_TOUCH_Y = 0.34;
+    const GROUND_MOVE_SCALE = 1.35;
+    const GROUND_LIFT_SCALE = 0.075;
+
+    const levels = [
+      {
+        name: "Tutorial",
+        description: "Ande no chão, empurre com os braços e chegue ao portal.",
+        spawn: [0, EYE_HEIGHT, 4],
+        respawn: [0, EYE_HEIGHT, 4],
+        obstacles: [
+          { pos: [0, 0.4, 0], size: [8, 0.8, 8], color: "#6b6b6b" },
+          { pos: [0, 0.6, -6], size: [2.5, 1.2, 2.5], color: "#4d6a88" },
+          { pos: [2.8, 0.6, -10], size: [2.5, 1.2, 2.5], color: "#4d6a88" },
+          { pos: [-2.8, 0.6, -14], size: [2.5, 1.2, 2.5], color: "#4d6a88" },
+          { pos: [0, 0.6, -18], size: [6, 1.2, 1.2], color: "#8de3ff" }
+        ],
+        checkpoints: [
+          { pos: [0, 0.7, -8], size: [0.8, 1.4, 0.5] }
+        ],
+        goal: { pos: [0, 1.2, -21], size: [1.2, 2.4, 0.8] }
+      },
+      {
+        name: "Corredor",
+        description: "Use o chão para ganhar velocidade e desviar dos blocos.",
+        spawn: [0, EYE_HEIGHT, 4],
+        respawn: [0, EYE_HEIGHT, 4],
+        obstacles: [
+          { pos: [0, 0.4, 0], size: [8, 0.8, 8], color: "#6b6b6b" },
+          { pos: [-2.5, 0.6, -6], size: [2.2, 1.2, 2.2], color: "#4d6a88" },
+          { pos: [2.5, 0.6, -9], size: [2.2, 1.2, 2.2], color: "#4d6a88" },
+          { pos: [0, 0.6, -12], size: [2.2, 1.2, 2.2], color: "#4d6a88" },
+          { pos: [-2.5, 0.6, -15], size: [2.2, 1.2, 2.2], color: "#4d6a88" },
+          { pos: [2.5, 0.6, -18], size: [2.2, 1.2, 2.2], color: "#4d6a88" },
+          { pos: [0, 0.6, -22], size: [6, 1.2, 1.0], color: "#8de3ff" }
+        ],
+        checkpoints: [
+          { pos: [0, 0.7, -11], size: [0.8, 1.4, 0.5] },
+          { pos: [0, 0.7, -19], size: [0.8, 1.4, 0.5] }
+        ],
+        goal: { pos: [0, 1.2, -25], size: [1.2, 2.4, 0.8] }
+      },
+      {
+        name: "Torre",
+        description: "Suba pelos blocos e atravesse a superfície escorregadia.",
+        spawn: [0, EYE_HEIGHT, 4],
+        respawn: [0, EYE_HEIGHT, 4],
+        obstacles: [
+          { pos: [0, 0.4, 0], size: [10, 0.8, 10], color: "#6b6b6b" },
+          { pos: [0, 0.6, -5], size: [3, 1.2, 3], color: "#4d6a88" },
+          { pos: [-2.5, 1.4, -9], size: [2.5, 1.2, 2.5], color: "#4d6a88" },
+          { pos: [2.5, 2.2, -13], size: [2.5, 1.2, 2.5], color: "#4d6a88" },
+          { pos: [0, 3.0, -17], size: [2.5, 1.2, 2.5], color: "#4d6a88" },
+          { pos: [0, 1.0, -21], size: [7, 0.8, 2], color: "#8de3ff" },
+          { pos: [0, 0.6, -26], size: [6, 1.2, 1.0], color: "#4d6a88" }
+        ],
+        checkpoints: [
+          { pos: [0, 1.0, -12], size: [0.8, 1.4, 0.5] },
+          { pos: [0, 1.0, -20], size: [0.8, 1.4, 0.5] }
+        ],
+        goal: { pos: [0, 1.3, -30], size: [1.2, 2.4, 0.8] }
+      }
+    ];
+
+    let selectedLevel = 0;
+    let gameState = "menu";
+    let worldObstacles = [];
+    let checkpoints = [];
+    let goalBox = null;
+    let currentRespawn = new THREE.Vector3(0, EYE_HEIGHT, 4);
+
+    function v3(a) {
+      return new THREE.Vector3(a[0], a[1], a[2]);
+    }
+
+    function setText(selector, value) {
+      const el = document.querySelector(selector);
+      if (el) el.setAttribute("value", value);
+    }
+
+    function clearChildren(node) {
+      while (node.firstChild) node.removeChild(node.firstChild);
+    }
+
+    function pointToBoxDistance(p, b) {
+      const dx = Math.max(Math.abs(p.x - b.pos.x) - b.size.x / 2, 0);
+      const dy = Math.max(Math.abs(p.y - b.pos.y) - b.size.y / 2, 0);
+      const dz = Math.max(Math.abs(p.z - b.pos.z) - b.size.z / 2, 0);
+      return Math.sqrt(dx * dx + dy * dy + dz * dz);
+    }
+
+    function clamp(v, min, max) {
+      return Math.max(min, Math.min(max, v));
+    }
+
+    function updateMenuLabels() {
+      setText("#menuLevelText", `Nível: ${levels[selectedLevel].name}`);
+      setText("#menuDescText", levels[selectedLevel].description);
+    }
+
+    function showMenu() {
+      gameState = "menu";
+      document.querySelector("#menuRoot").setAttribute("visible", true);
+      document.querySelector("#hudRoot").setAttribute("visible", false);
+      document.querySelector("#worldRoot").setAttribute("visible", false);
+      setText("#hintText", "Aponte o raio vermelho para os botões.");
+      setText("#statusText", "");
+      const rig = document.querySelector("#rig");
+      const physics = rig.components["rig-physics"];
+      rig.object3D.position.set(0, EYE_HEIGHT, 0);
+      if (physics) physics.velocity.set(0, 0, 0);
+    }
+
+    function startGame() {
+      gameState = "play";
+      document.querySelector("#menuRoot").setAttribute("visible", false);
+      document.querySelector("#hudRoot").setAttribute("visible", true);
+      document.querySelector("#worldRoot").setAttribute("visible", true);
+      loadLevel(selectedLevel);
+    }
+
+    function respawnPlayer() {
+      const rig = document.querySelector("#rig");
+      const physics = rig.components["rig-physics"];
+      rig.object3D.position.copy(currentRespawn);
+      if (physics) physics.velocity.set(0, 0, 0);
+      setText("#statusText", "Respawn");
+      setTimeout(() => setText("#statusText", ""), 700);
+    }
+
+    function nextLevel() {
+      if (selectedLevel < levels.length - 1) {
+        selectedLevel += 1;
+        startGame();
+      } else {
+        showMenu();
+      }
+    }
+
+    function addBox(root, def, extraMaterial = "") {
+      const box = document.createElement("a-box");
+      box.setAttribute("position", `${def.pos[0]} ${def.pos[1]} ${def.pos[2]}`);
+      box.setAttribute("width", def.size[0]);
+      box.setAttribute("height", def.size[1]);
+      box.setAttribute("depth", def.size[2]);
+      box.setAttribute(
+        "material",
+        extraMaterial || `color: ${def.color || "#777"}; roughness: 0.95; metalness: 0.0`
+      );
+      root.appendChild(box);
+      return box;
+    }
+
+    function loadLevel(index) {
+      selectedLevel = (index + levels.length) % levels.length;
+      const level = levels[selectedLevel];
+
+      worldObstacles = [];
+      checkpoints = [];
+      goalBox = null;
+      currentRespawn.copy(v3(level.respawn));
+
+      const rig = document.querySelector("#rig");
+      const physics = rig.components["rig-physics"];
+      rig.object3D.position.copy(v3(level.spawn));
+      if (physics) physics.velocity.set(0, 0, 0);
+
+      const root = document.querySelector("#worldRoot");
+      clearChildren(root);
+
+      const floor = document.createElement("a-plane");
+      floor.setAttribute("rotation", "-90 0 0");
+      floor.setAttribute("width", "220");
+      floor.setAttribute("height", "220");
+      floor.setAttribute("material", "color: #666; roughness: 1; metalness: 0");
+      floor.setAttribute("shadow", "receive: true");
+      root.appendChild(floor);
+
+      const sky = document.querySelector("#sky");
+      if (sky) sky.setAttribute("color", "#9fd3ff");
+
+      const ambient = document.querySelector("#ambientLight");
+      if (ambient) ambient.setAttribute("light", "type: ambient; color: #ffffff; intensity: 0.8");
+
+      const dir = document.querySelector("#sunLight");
+      if (dir) dir.setAttribute("light", "type: directional; color: #ffffff; intensity: 1.15");
+
+      level.obstacles.forEach(o => {
+        const rec = {
+          pos: v3(o.pos),
+          size: new THREE.Vector3(o.size[0], o.size[1], o.size[2]),
+          color: o.color
+        };
+        worldObstacles.push(rec);
+        addBox(root, o, `color: ${o.color}; roughness: 0.95; metalness: 0.0`);
+      });
+
+      level.checkpoints.forEach((cp, i) => {
+        const rec = {
+          pos: v3(cp.pos),
+          size: new THREE.Vector3(cp.size[0], cp.size[1], cp.size[2])
+        };
+        checkpoints.push(rec);
+
+        addBox(root, { pos: cp.pos, size: cp.size, color: "#4dff9c" }, "color: #4dff9c; emissive: #1dff7d; emissiveIntensity: 0.25");
+        const label = document.createElement("a-text");
+        label.setAttribute("value", `CP ${i + 1}`);
+        label.setAttribute("position", `${cp.pos[0]} ${cp.pos[1] + 0.9} ${cp.pos[2] + 0.15}`);
+        label.setAttribute("align", "center");
+        label.setAttribute("color", "#ffffff");
+        label.setAttribute("width", "3");
+        root.appendChild(label);
+      });
+
+      goalBox = {
+        pos: v3(level.goal.pos),
+        size: new THREE.Vector3(level.goal.size[0], level.goal.size[1], level.goal.size[2])
+      };
+
+      addBox(root, { pos: level.goal.pos, size: level.goal.size, color: "#ffe75e" }, "color: #ffe75e; emissive: #fff2a0; emissiveIntensity: 0.35");
+      const goalText = document.createElement("a-text");
+      goalText.setAttribute("value", "GOAL");
+      goalText.setAttribute("position", `${level.goal.pos[0]} ${level.goal.pos[1] + 1.8} ${level.goal.pos[2] + 0.4}`);
+      goalText.setAttribute("align", "center");
+      goalText.setAttribute("color", "#ffffff");
+      goalText.setAttribute("width", "4");
+      root.appendChild(goalText);
+
+      setText("#hudText", level.name);
+      setText("#hudSubText", level.description);
+      setText("#hintText", "Aproxime as mãos do chão e mova os braços. Para frente, para os lados, para onde seu braço puxar.");
+      setText("#statusText", "");
+    }
+
+    function resolvePlayerCollision(pos, velocity) {
+      const playerBottom = pos.y - PLAYER_HEIGHT;
+      const playerTop = pos.y;
+
+      for (const box of worldObstacles) {
+        const boxBottom = box.pos.y - box.size.y / 2;
+        const boxTop = box.pos.y + box.size.y / 2;
+
+        const verticalOverlap = playerTop > boxBottom && playerBottom < boxTop;
+        if (!verticalOverlap) continue;
+
+        const halfX = box.size.x / 2 + PLAYER_RADIUS;
+        const halfZ = box.size.z / 2 + PLAYER_RADIUS;
+        const dx = pos.x - box.pos.x;
+        const dz = pos.z - box.pos.z;
+
+        const overlapX = halfX - Math.abs(dx);
+        const overlapZ = halfZ - Math.abs(dz);
+
+        if (overlapX > 0 && overlapZ > 0) {
+          const standingOnTop =
+            velocity.y <= 0 &&
+            playerBottom >= boxTop - 0.25 &&
+            playerBottom <= boxTop + 0.18 &&
+            Math.abs(dx) <= box.size.x / 2 + PLAYER_RADIUS * 0.8 &&
+            Math.abs(dz) <= box.size.z / 2 + PLAYER_RADIUS * 0.8;
+
+          if (standingOnTop) {
+            pos.y = boxTop + PLAYER_HEIGHT;
+            velocity.y = 0;
+            continue;
+          }
+
+          if (overlapX < overlapZ) {
+            pos.x += dx > 0 ? overlapX : -overlapX;
+            velocity.x = 0;
+          } else {
+            pos.z += dz > 0 ? overlapZ : -overlapZ;
+            velocity.z = 0;
+          }
+        }
+      }
+    }
+
+    AFRAME.registerComponent("menu-button", {
+      schema: { action: { type: "string" } },
+      init: function () {
+        const el = this.el;
+
+        el.addEventListener("mouseenter", () => {
+          el.setAttribute("material", "color", "#ffffff");
+          el.setAttribute("text", "color", "#111111");
+        });
+
+        el.addEventListener("mouseleave", () => {
+          const action = this.data.action;
+          if (action === "play") el.setAttribute("material", "color", "#ffd86b");
+          else if (action === "menu") el.setAttribute("material", "color", "#a8d8ff");
+          else el.setAttribute("material", "color", "#d6d6d6");
+          el.setAttribute("text", "color", "#111111");
+        });
+
+        el.addEventListener("click", () => {
+          if (this.data.action === "prev") {
+            selectedLevel = (selectedLevel - 1 + levels.length) % levels.length;
+            updateMenuLabels();
+          } else if (this.data.action === "next") {
+            selectedLevel = (selectedLevel + 1) % levels.length;
+            updateMenuLabels();
+          } else if (this.data.action === "play") {
+            startGame();
+          } else if (this.data.action === "menu") {
+            showMenu();
+          } else if (this.data.action === "restart") {
+            startGame();
+          } else if (this.data.action === "respawn") {
+            respawnPlayer();
+          }
+        });
+      }
+    });
+
+    AFRAME.registerComponent("rig-physics", {
+      init: function () {
+        this.velocity = new THREE.Vector3();
+      },
+
+      tick: function (time, dt) {
+        if (gameState !== "play") return;
+
+        const delta = Math.min(dt / 1000, 0.05);
+        const pos = this.el.object3D.position;
+
+        this.velocity.y -= GRAVITY * delta;
+
+        pos.addScaledVector(this.velocity, delta);
+
+        if (pos.y < EYE_HEIGHT) {
+          pos.y = EYE_HEIGHT;
+          if (this.velocity.y < 0) this.velocity.y = 0;
+        }
+
+        resolvePlayerCollision(pos, this.velocity);
+
+        if (pos.y < FALL_LIMIT) {
+          respawnPlayer();
+          return;
+        }
+
+        const playerPos = pos.clone();
+
+        for (const cp of checkpoints) {
+          if (pointToBoxDistance(playerPos, cp) < 0.6) {
+            currentRespawn.copy(cp.pos.clone().add(new THREE.Vector3(0, EYE_HEIGHT, 0)));
+            setText("#statusText", "Checkpoint");
+            setTimeout(() => setText("#statusText", ""), 700);
+          }
+        }
+
+        if (goalBox && pointToBoxDistance(playerPos, goalBox) < 0.95) {
+          setText("#statusText", "Nível concluído");
+          setTimeout(() => {
+            setText("#statusText", "");
+            nextLevel();
+          }, 700);
+        }
+      }
+    });
+
+    AFRAME.registerComponent("ground-move-hand", {
+      init: function () {
+        this.lastWorldPos = new THREE.Vector3();
+        this.worldPos = new THREE.Vector3();
+        this.handVel = new THREE.Vector3();
+        this.first = true;
+      },
+
+      tick: function (time, dt) {
+        if (gameState !== "play") {
+          this.first = true;
+          return;
+        }
+
+        const delta = Math.min(dt / 1000, 0.05);
+        this.el.object3D.getWorldPosition(this.worldPos);
+
+        if (this.first) {
+          this.lastWorldPos.copy(this.worldPos);
+          this.first = false;
+          return;
+        }
+
+        if (delta <= 0) return;
+
+        this.handVel.copy(this.worldPos).sub(this.lastWorldPos).divideScalar(delta);
+
+        const nearGround = this.worldPos.y <= FLOOR_Y + HAND_GROUND_TOUCH_Y;
+        if (nearGround) {
+          const rig = document.querySelector("#rig").object3D;
+          const physics = document.querySelector("#rig").components["rig-physics"];
+
+          rig.position.x -= this.handVel.x * delta * GROUND_MOVE_SCALE;
+          rig.position.z -= this.handVel.z * delta * GROUND_MOVE_SCALE;
+
+          if (this.handVel.y < -0.05) {
+            rig.position.y += (-this.handVel.y) * delta * GROUND_LIFT_SCALE;
+            if (physics) physics.velocity.y = Math.max(physics.velocity.y, 0);
+          }
+
+          if (physics) {
+            physics.velocity.x *= 0.98;
+            physics.velocity.z *= 0.98;
+          }
+        }
+
+        this.lastWorldPos.copy(this.worldPos);
+      }
+    });
+
+    window.addEventListener("DOMContentLoaded", () => {
+      updateMenuLabels();
+      showMenu();
+
+      window.addEventListener("keydown", e => {
+        if (e.key === "Escape") {
+          showMenu();
+        } else if (e.key === "Enter" && gameState === "menu") {
+          startGame();
+        } else if (e.key === "ArrowLeft" && gameState === "menu") {
+          selectedLevel = (selectedLevel - 1 + levels.length) % levels.length;
+          updateMenuLabels();
+        } else if (e.key === "ArrowRight" && gameState === "menu") {
+          selectedLevel = (selectedLevel + 1) % levels.length;
+          updateMenuLabels();
+        } else if (e.key.toLowerCase() === "r" && gameState === "play") {
+          respawnPlayer();
+        }
+      });
+    });
+  </script>
+
+</head>
+
+<body>
+  <a-scene renderer="colorManagement: true; physicallyCorrectLights: true" vr-mode-ui="enabled: true">
+    <a-sky id="sky" color="#9fd3ff"></a-sky>
+
+```
+<a-entity id="ambientLight" light="type: ambient; color: #ffffff; intensity: 0.8"></a-entity>
+<a-entity id="sunLight" light="type: directional; color: #ffffff; intensity: 1.15" position="-1 3 2"></a-entity>
+
+<a-entity id="worldRoot" visible="false"></a-entity>
+
+<a-entity id="rig" position="0 1.6 0" rig-physics>
+  <a-camera cursor="rayOrigin: mouse; fuse: false" raycaster="objects: .clickable"></a-camera>
+
+  <a-entity
+    id="leftHand"
+    laser-controls="hand: left"
+    cursor="rayOrigin: entity; fuse: false"
+    raycaster="objects: .clickable"
+    line="color: red; opacity: 1"
+    ground-move-hand>
+    <a-box position="0 0 -0.04" width="0.11" height="0.07" depth="0.16" material="color: #ff2020; metalness: 0; roughness: 0.8"></a-box>
+  </a-entity>
+
+  <a-entity
+    id="rightHand"
+    laser-controls="hand: right"
+    cursor="rayOrigin: entity; fuse: false"
+    raycaster="objects: .clickable"
+    line="color: red; opacity: 1"
+    ground-move-hand>
+    <a-box position="0 0 -0.04" width="0.11" height="0.07" depth="0.16" material="color: #ff2020; metalness: 0; roughness: 0.8"></a-box>
+  </a-entity>
+
+  <a-entity id="menuRoot" position="0 0 -2.2" visible="true">
+    <a-plane width="2.9" height="2.2" material="color: #ececec; opacity: 0.97"></a-plane>
+
+    <a-text value="CLIMB" position="0 0.75 0.01" align="center" color="#111" width="4"></a-text>
+    <a-text id="menuLevelText" value="Nível: -" position="0 0.40 0.01" align="center" color="#222" width="4"></a-text>
+    <a-text id="menuDescText" value="" position="0 0.06 0.01" align="center" color="#333" width="3.2"></a-text>
+
+    <a-entity class="clickable" menu-button="action: prev"
+      geometry="primitive: plane; width: 0.7; height: 0.28"
+      material="color: #d6d6d6"
+      position="-0.9 -0.60 0.02"
+      text="value: Prev; align: center; color: #111; width: 2">
+    </a-entity>
+
+    <a-entity class="clickable" menu-button="action: play"
+      geometry="primitive: plane; width: 0.95; height: 0.32"
+      material="color: #ffd86b"
+      position="0 -0.60 0.02"
+      text="value: Play; align: center; color: #111; width: 2">
+    </a-entity>
+
+    <a-entity class="clickable" menu-button="action: next"
+      geometry="primitive: plane; width: 0.7; height: 0.28"
+      material="color: #d6d6d6"
+      position="0.9 -0.60 0.02"
+      text="value: Next; align: center; color: #111; width: 2">
+    </a-entity>
+
+    <a-text value="Use o raio vermelho para clicar." position="0 -1.02 0.01" align="center" color="#222" width="3.2"></a-text>
+  </a-entity>
+
+  <a-entity id="hudRoot" position="0 0 -2.2" visible="false">
+    <a-plane width="3.2" height="1.1" material="color: #101820; opacity: 0.65"></a-plane>
+
+    <a-text id="hudText" value="" position="0 0.35 0.02" align="center" color="#ffffff" width="3.4"></a-text>
+    <a-text id="hudSubText" value="" position="0 0.08 0.02" align="center" color="#e3f4ff" width="3.4"></a-text>
+    <a-text id="hintText" value="" position="0 -0.22 0.02" align="center" color="#ffffff" width="3.4"></a-text>
+    <a-text id="statusText" value="" position="0 -0.46 0.02" align="center" color="#ffffff" width="3.0"></a-text>
+
+    <a-entity class="clickable" menu-button="action: menu"
+      geometry="primitive: plane; width: 0.7; height: 0.25"
+      material="color: #a8d8ff"
+      position="-1.15 -0.73 0.03"
+      text="value: Menu; align: center; color: #111; width: 2">
+    </a-entity>
+
+    <a-entity class="clickable" menu-button="action: respawn"
+      geometry="primitive: plane; width: 0.95; height: 0.25"
+      material="color: #d6d6d6"
+      position="0 -0.73 0.03"
+      text="value: Respawn; align
+      </a-scene> </body> </html>
